@@ -1,13 +1,31 @@
 {
   "name": "@carolinedanslesnuages/reine",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Les mêmes réglages GitHub dans tous vos dépôts : fusion en squash avec le titre de la PR, jeton Actions en lecture seule, alertes de sécurité… Vérifie, explique, et corrige sur demande.",
   "type": "module",
-  "bin": { "reine": "bin/reine.mjs" },
-  "files": ["bin", "src"],
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test test/*.test.mjs" },
-  "keywords": ["github", "settings", "repository", "governance", "release-please"],
-  "repository": { "type": "git", "url": "git+https://github.com/Carolinedanslesnuages/reine.git" },
+  "bin": {
+    "reine": "bin/reine.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "github",
+    "settings",
+    "repository",
+    "governance",
+    "release-please"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Carolinedanslesnuages/reine.git"
+  },
   "license": "MIT"
 }
