@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-/** Reine : les mêmes réglages GitHub dans tous vos dépôts. */
+/** Reine: the same GitHub settings in all your repositories. */
 import { readFileSync, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { REGLES, verifierDepot, corrections } from '../src/regles.mjs';
+import { RULES, checkRepository, fixes } from '../src/rules.mjs';
 import { client } from '../src/github.mjs';
 
-const AIDE = `Reine · les mêmes réglages GitHub dans tous vos dépôts
+const HELP = `Reine · les mêmes réglages GitHub dans tous vos dépôts
 
   reine regles                    les règles, et pourquoi chacune compte
   reine verifier [dépôts…]        vérifie, sans rien changer
@@ -19,120 +19,143 @@ const AIDE = `Reine · les mêmes réglages GitHub dans tous vos dépôts
 
 Jeton : celui de « gh » (gh auth login), ou GITHUB_TOKEN.`;
 
-function options(args) {
-  const o = { depots: [], visibilite: 'public', config: 'reine.json' };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--prives') o.visibilite = 'private';
-    else if (a === '--tous') o.visibilite = 'all';
-    else if (a === '--oui') o.oui = true;
-    else if (a === '--json') o.json = true;
-    else if (a === '--config') o.config = args[++i];
-    else if (a.startsWith('--')) throw new Error(`Option inconnue : ${a}. Tapez « reine aide ».`);
-    else o.depots.push(a);
+/** Status names in the --json output (public format, kept in French). */
+const JSON_STATUS = { ok: 'ok', mismatch: 'ecart', unavailable: 'na', ignored: 'ignoree', blocked: 'bloquee' };
+
+function parseOptions(args) {
+  const options = { repositories: [], visibility: 'public', config: 'reine.json' };
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if (argument === '--prives') options.visibility = 'private';
+    else if (argument === '--tous') options.visibility = 'all';
+    else if (argument === '--oui') options.yes = true;
+    else if (argument === '--json') options.json = true;
+    else if (argument === '--config') options.config = args[++index];
+    else if (argument.startsWith('--')) throw new Error(`Option inconnue : ${argument}. Tapez « reine aide ».`);
+    else options.repositories.push(argument);
   }
-  return o;
+  return options;
 }
 
-function lireConfig(chemin) {
-  if (!existsSync(chemin)) return {};
+function readConfig(path) {
+  if (!existsSync(path)) return {};
   try {
-    return JSON.parse(readFileSync(chemin, 'utf8'));
-  } catch (e) {
-    throw new Error(`${chemin} illisible : ${e.message}`);
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`${path} illisible : ${error.message}`);
   }
 }
 
-async function cibles(gh, o) {
-  const compte = await gh.moi();
-  if (o.depots.length) return Promise.all(o.depots.map((n) => gh.depot(n.includes('/') ? n : `${compte}/${n}`)));
-  const tous = await gh.depots(compte);
-  // La liste ne contient pas les réglages de fusion ni de sécurité : on lit la fiche complète de chaque dépôt.
-  const choisis = tous.filter((d) => !d.archived && !d.fork && (o.visibilite === 'all' || d.visibility === o.visibilite)).sort((a, b) => a.name.localeCompare(b.name));
-  return Promise.all(choisis.map((d) => gh.depot(d.full_name)));
+async function targets(github, options) {
+  const owner = await github.currentUser();
+  if (options.repositories.length) {
+    return Promise.all(options.repositories.map((name) => github.repository(name.includes('/') ? name : `${owner}/${name}`)));
+  }
+  const listed = await github.repositories(owner);
+  // The listing lacks merge and security settings: read the full record of each repository.
+  const selected = listed
+    .filter((repo) => !repo.archived && !repo.fork && (options.visibility === 'all' || repo.visibility === options.visibility))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return Promise.all(selected.map((repo) => github.repository(repo.full_name)));
 }
 
-async function bilan(gh, depots, config) {
-  const lignes = [];
-  for (const d of depots) {
-    const resultats = verifierDepot(d, await gh.extra(d.full_name), config);
-    lignes.push({ depot: d, resultats });
+async function review(github, repositories, config) {
+  const reports = [];
+  for (const repo of repositories) {
+    reports.push({ repo, results: checkRepository(repo, await github.extra(repo.full_name), config) });
   }
-  return lignes;
+  return reports;
 }
 
-function afficher(lignes) {
-  const larg = Math.max(...lignes.map((l) => l.depot.name.length));
-  for (const { depot, resultats } of lignes) {
-    const ecarts = resultats.filter((x) => x.statut === 'ecart');
-    const bloquees = resultats.filter((x) => x.statut === 'bloquee');
-    const na = resultats.filter((x) => x.statut === 'na').length;
-    console.log(`${ecarts.length || bloquees.length ? '✗' : '✓'} ${depot.name.padEnd(larg)}  ${ecarts.length ? ecarts.map((x) => x.regle.id).join(', ') : bloquees.length ? '' : 'conforme'}${na ? `  (${na} non applicable${na > 1 ? 's' : ''})` : ''}`);
-    for (const b of bloquees) console.log(`    ⚠ ${b.regle.id} non corrigeable tel quel : ${b.blocage}`);
+const plural = (count, word) => `${count} ${word}${count > 1 ? 's' : ''}`;
+const withStatus = (results, status) => results.filter((result) => result.status === status);
+
+function print(reports) {
+  const width = Math.max(...reports.map((report) => report.repo.name.length));
+  for (const { repo, results } of reports) {
+    const mismatches = withStatus(results, 'mismatch');
+    const blocked = withStatus(results, 'blocked');
+    const unavailable = withStatus(results, 'unavailable').length;
+    const summary = mismatches.length ? mismatches.map((result) => result.rule.id).join(', ') : blocked.length ? '' : 'conforme';
+    const unavailableNote = unavailable ? `  (${unavailable} non applicable${unavailable > 1 ? 's' : ''})` : '';
+    console.log(`${mismatches.length || blocked.length ? '✗' : '✓'} ${repo.name.padEnd(width)}  ${summary}${unavailableNote}`);
+    for (const result of blocked) console.log(`    ⚠ ${result.rule.id} non corrigeable tel quel : ${result.blocker}`);
   }
-  const total = lignes.reduce((n, l) => n + l.resultats.filter((x) => x.statut === 'ecart').length, 0);
-  const conformes = lignes.filter((l) => !l.resultats.some((x) => x.statut === 'ecart')).length;
-  console.log(`\n${lignes.length} dépôt${lignes.length > 1 ? 's' : ''} · ${conformes} conforme${conformes > 1 ? 's' : ''} · ${total} écart${total > 1 ? 's' : ''}`);
+  const total = reports.reduce((count, report) => count + withStatus(report.results, 'mismatch').length, 0);
+  const compliant = reports.filter((report) => !withStatus(report.results, 'mismatch').length).length;
+  console.log(`\n${plural(reports.length, 'dépôt')} · ${plural(compliant, 'conforme')} · ${plural(total, 'écart')}`);
   return total;
 }
 
-async function principal() {
-  const [commande, ...reste] = process.argv.slice(2);
-  if (!commande || ['aide', '--aide', '-h', '--help'].includes(commande)) return console.log(AIDE);
-  const o = options(reste);
-  if (commande === 'regles') {
-    for (const r of REGLES) console.log(`• ${r.titre} (${r.id})\n  ${r.pourquoi}\n`);
-    return;
-  }
-  if (!['verifier', 'appliquer'].includes(commande)) throw new Error(`Commande inconnue : ${commande}. Tapez « reine aide ».`);
-  const config = lireConfig(o.config);
-  const gh = client();
-  const depots = await cibles(gh, o);
-  if (!depots.length) return console.log('Aucun dépôt à vérifier.');
-  const lignes = await bilan(gh, depots, config);
+function printJson(command, reports) {
+  const output = reports.map((report) => ({
+    depot: report.repo.full_name,
+    resultats: report.results.map((result) => ({ regle: result.rule.id, statut: JSON_STATUS[result.status], actuel: result.current, attendu: result.rule.expected })),
+  }));
+  console.log(JSON.stringify(output, null, 2));
+  if (command === 'verifier' && reports.some((report) => withStatus(report.results, 'mismatch').length)) process.exitCode = 1;
+}
 
-  if (o.json) {
-    console.log(JSON.stringify(lignes.map((l) => ({ depot: l.depot.full_name, resultats: l.resultats.map((x) => ({ regle: x.regle.id, statut: x.statut, actuel: x.actuel, attendu: x.regle.attendu })) })), null, 2));
-    if (commande === 'verifier' && lignes.some((l) => l.resultats.some((x) => x.statut === 'ecart'))) process.exitCode = 1;
+async function confirm(options) {
+  if (options.yes) return true;
+  if (!process.stdin.isTTY) throw new Error('Pas de terminal pour confirmer : ajoutez --oui.');
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  const accepted = /^o/i.test((await prompt.question('\nAppliquer ces changements ? (o/N) ')).trim());
+  prompt.close();
+  return accepted;
+}
+
+async function apply(github, reports, options, config) {
+  const plan = reports
+    .map((report) => ({ repo: report.repo, calls: fixes(report.repo, report.results), mismatches: withStatus(report.results, 'mismatch') }))
+    .filter((step) => step.calls.length);
+  console.log('\nChangements prévus :');
+  for (const step of plan) for (const mismatch of step.mismatches) console.log(`  ${step.repo.name} · ${mismatch.rule.title}`);
+  if (!(await confirm(options))) return console.log('Rien n’a été changé.');
+  let failures = 0;
+  for (const step of plan) {
+    for (const call of step.calls) {
+      const result = await github.call(call.method, call.path, call.body);
+      if (result.status >= 300) {
+        failures++;
+        const target = call.path.split('/').slice(4).join('/') || 'réglages';
+        const detail = result.data && result.data.message ? ' : ' + result.data.message : '';
+        console.log(`  ✗ ${step.repo.name} : ${call.method} ${target} refusé (${result.status}${detail})`);
+      }
+    }
+  }
+  console.log('\nAprès correction :');
+  print(await review(github, await Promise.all(plan.map((step) => github.repository(step.repo.full_name))), config));
+  if (failures) process.exitCode = 1;
+}
+
+async function main() {
+  const [command, ...rest] = process.argv.slice(2);
+  if (!command || ['aide', '--aide', '-h', '--help'].includes(command)) return console.log(HELP);
+  const options = parseOptions(rest);
+  if (command === 'regles') {
+    for (const rule of RULES) console.log(`• ${rule.title} (${rule.id})\n  ${rule.reason}\n`);
     return;
   }
-  const total = afficher(lignes);
-  if (commande === 'verifier') {
+  if (!['verifier', 'appliquer'].includes(command)) throw new Error(`Commande inconnue : ${command}. Tapez « reine aide ».`);
+  const config = readConfig(options.config);
+  const github = client();
+  const repositories = await targets(github, options);
+  if (!repositories.length) return console.log('Aucun dépôt à vérifier.');
+  const reports = await review(github, repositories, config);
+  if (options.json) return printJson(command, reports);
+  const total = print(reports);
+  if (command === 'verifier') {
     if (total) {
       console.log('\nDétail : reine regles · Corriger : reine appliquer');
       process.exitCode = 1;
     }
     return;
   }
-  if (!total) return;
-
-  const plan = lignes.map((l) => ({ depot: l.depot, appels: corrections(l.depot, l.resultats), ecarts: l.resultats.filter((x) => x.statut === 'ecart') })).filter((p) => p.appels.length);
-  console.log('\nChangements prévus :');
-  for (const p of plan) for (const e of p.ecarts) console.log(`  ${p.depot.name} · ${e.regle.titre}`);
-  if (!o.oui) {
-    if (!process.stdin.isTTY) throw new Error('Pas de terminal pour confirmer : ajoutez --oui.');
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ok = /^o/i.test((await rl.question('\nAppliquer ces changements ? (o/N) ')).trim());
-    rl.close();
-    if (!ok) return console.log('Rien n’a été changé.');
-  }
-  let echecs = 0;
-  for (const p of plan) {
-    for (const a of p.appels) {
-      const r = await gh.appel(a.methode, a.chemin, a.corps);
-      if (r.statut >= 300) {
-        echecs++;
-        console.log(`  ✗ ${p.depot.name} : ${a.methode} ${a.chemin.split('/').slice(4).join('/') || 'réglages'} refusé (${r.statut}${r.donnees && r.donnees.message ? ' : ' + r.donnees.message : ''})`);
-      }
-    }
-  }
-  console.log('\nAprès correction :');
-  const apres = await bilan(gh, await Promise.all(plan.map((p) => gh.depot(p.depot.full_name))), config);
-  afficher(apres);
-  if (echecs) process.exitCode = 1;
+  if (total) await apply(github, reports, options, config);
 }
 
-principal().catch((e) => {
-  console.error(`reine : ${e.message}`);
+main().catch((error) => {
+  console.error(`reine : ${error.message}`);
   process.exit(1);
 });

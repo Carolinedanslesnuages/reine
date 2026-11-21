@@ -1,7 +1,7 @@
-/** Accès à l'API GitHub avec votre jeton (GITHUB_TOKEN, GH_TOKEN, ou celui de « gh »). */
+/** GitHub API access with your token (GITHUB_TOKEN, GH_TOKEN, or the one from `gh`). */
 import { execFileSync } from 'node:child_process';
 
-export function jeton() {
+export function token() {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
   try {
@@ -11,56 +11,67 @@ export function jeton() {
   }
 }
 
-export function client(token = jeton(), base = process.env.REINE_API_BASE || 'https://api.github.com') {
-  async function appel(methode, chemin, corps) {
-    const r = await fetch(base + chemin, {
-      method: methode,
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'reine', ...(corps ? { 'Content-Type': 'application/json' } : {}) },
-      body: corps ? JSON.stringify(corps) : undefined,
+export function client(authToken = token(), apiBase = process.env.REINE_API_BASE || 'https://api.github.com') {
+  async function call(method, path, body) {
+    const response = await fetch(apiBase + path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'reine',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
     });
-    if (r.status === 204) return { statut: 204, donnees: null };
-    const texte = await r.text();
-    const donnees = texte ? JSON.parse(texte) : null;
-    return { statut: r.status, donnees };
+    if (response.status === 204) return { status: 204, data: null };
+    const text = await response.text();
+    return { status: response.status, data: text ? JSON.parse(text) : null };
   }
   return {
-    appel,
-    async moi() {
-      const r = await appel('GET', '/user');
-      if (r.statut !== 200) throw new Error(`Jeton refusé par GitHub (${r.statut}).`);
-      return r.donnees.login;
+    call,
+    async currentUser() {
+      const result = await call('GET', '/user');
+      if (result.status !== 200) throw new Error(`Jeton refusé par GitHub (${result.status}).`);
+      return result.data.login;
     },
-    async depots(compte) {
-      const tous = [];
+    async repositories(owner) {
+      const allRepositories = [];
       for (let page = 1; ; page++) {
-        const r = await appel('GET', `/user/repos?per_page=100&page=${page}&affiliation=owner`);
-        if (r.statut !== 200) throw new Error(`Liste des dépôts impossible (${r.statut}).`);
-        tous.push(...r.donnees);
-        if (r.donnees.length < 100) break;
+        const result = await call('GET', `/user/repos?per_page=100&page=${page}&affiliation=owner`);
+        if (result.status !== 200) throw new Error(`Liste des dépôts impossible (${result.status}).`);
+        allRepositories.push(...result.data);
+        if (result.data.length < 100) break;
       }
-      return tous.filter((d) => d.owner.login.toLowerCase() === compte.toLowerCase());
+      return allRepositories.filter((repo) => repo.owner.login.toLowerCase() === owner.toLowerCase());
     },
-    async depot(nomComplet) {
-      const r = await appel('GET', `/repos/${nomComplet}`);
-      if (r.statut !== 200) throw new Error(`Dépôt introuvable ou inaccessible : ${nomComplet} (${r.statut}).`);
-      return r.donnees;
+    async repository(fullName) {
+      const result = await call('GET', `/repos/${fullName}`);
+      if (result.status !== 200) throw new Error(`Dépôt introuvable ou inaccessible : ${fullName} (${result.status}).`);
+      return result.data;
     },
-    /** Réglages qui ne sont pas dans la fiche du dépôt. */
-    async extra(nomComplet) {
-      const [a, v] = await Promise.all([appel('GET', `/repos/${nomComplet}/actions/permissions/workflow`), appel('GET', `/repos/${nomComplet}/vulnerability-alerts`)]);
-      return { actions: a.statut === 200 ? a.donnees : undefined, alertes: v.statut === 204 ? true : v.statut === 404 ? false : undefined, workflowsSansPermissions: await this.workflowsSansPermissions(nomComplet) };
+    /** Settings that are not part of the repository record. */
+    async extra(fullName) {
+      const [actions, alerts] = await Promise.all([
+        call('GET', `/repos/${fullName}/actions/permissions/workflow`),
+        call('GET', `/repos/${fullName}/vulnerability-alerts`),
+      ]);
+      return {
+        actions: actions.status === 200 ? actions.data : undefined,
+        alerts: alerts.status === 204 ? true : alerts.status === 404 ? false : undefined,
+        workflowsWithoutPermissions: await this.workflowsWithoutPermissions(fullName),
+      };
     },
-    /** Workflows qui ne déclarent aucun « permissions: » (ni global, ni par job). */
-    async workflowsSansPermissions(nomComplet) {
-      const l = await appel('GET', `/repos/${nomComplet}/contents/.github/workflows`);
-      if (l.statut !== 200 || !Array.isArray(l.donnees)) return [];
-      const sans = [];
-      for (const f of l.donnees.filter((x) => /\.ya?ml$/.test(x.name))) {
-        const c = await appel('GET', `/repos/${nomComplet}/contents/.github/workflows/${encodeURIComponent(f.name)}`);
-        const texte = c.donnees && c.donnees.content ? Buffer.from(c.donnees.content, 'base64').toString('utf8') : '';
-        if (!/^\s*permissions\s*:/m.test(texte)) sans.push(f.name);
+    /** Workflows that declare no "permissions:" at all (neither global nor per job). */
+    async workflowsWithoutPermissions(fullName) {
+      const listing = await call('GET', `/repos/${fullName}/contents/.github/workflows`);
+      if (listing.status !== 200 || !Array.isArray(listing.data)) return [];
+      const missing = [];
+      for (const entry of listing.data.filter((item) => /\.ya?ml$/.test(item.name))) {
+        const content = await call('GET', `/repos/${fullName}/contents/.github/workflows/${encodeURIComponent(entry.name)}`);
+        const text = content.data && content.data.content ? Buffer.from(content.data.content, 'base64').toString('utf8') : '';
+        if (!/^\s*permissions\s*:/m.test(text)) missing.push(entry.name);
       }
-      return sans;
+      return missing;
     },
   };
 }
