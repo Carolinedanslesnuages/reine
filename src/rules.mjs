@@ -78,6 +78,14 @@ export const RULES = [
     fix: patchSettings({ security_and_analysis: { secret_scanning: { status: 'enabled' }, secret_scanning_push_protection: { status: 'enabled' } } }),
   },
   {
+    id: 'analyse-codeql',
+    title: 'Analyse de code CodeQL',
+    reason: 'GitHub analyse le code à chaque PR et suit les données d’un bout à l’autre : injection SQL, HTML injecté, secrets qui fuient. Ce qu’une recherche de motifs (Constance) ne voit pas. Gratuit pour les dépôts publics, configuré par GitHub, sans fichier à ajouter.',
+    expected: 'configured',
+    read: (repo, extra) => extra.codeScanning,
+    fix: (repo) => [{ method: 'PATCH', path: `/repos/${repo.full_name}/code-scanning/default-setup`, body: { state: 'configured' } }],
+  },
+  {
     id: 'wiki-desactive',
     title: 'Wiki désactivé',
     reason: 'La documentation vit dans le dépôt (README, docs/), versionnée et relue en PR. Un wiki à côté se périme sans que personne ne le voie. Le désactiver masque ses pages sans les supprimer.',

@@ -17,6 +17,7 @@ au *Traité d'horlogerie* de son mari : des réglages précis, identiques et vé
 | Actions peut ouvrir des PR | release-please ouvre la PR de version ; sans cela, il échoue. |
 | Alertes de sécurité Dependabot | Être prévenue quand une dépendance a une faille connue (alertes, pas de PR automatiques). |
 | Détection des secrets et blocage au push | GitHub bloque un jeton poussé par erreur avant qu'il soit public. |
+| Analyse de code CodeQL | GitHub suit les données d'un bout à l'autre (injection SQL, HTML injecté, secrets qui fuient). Gratuit pour les dépôts publics, sans fichier à ajouter. |
 | Wiki désactivé | La doc vit dans le dépôt, versionnée et relue. Désactiver masque le wiki sans le supprimer. |
 
 `reine regles` affiche le détail.

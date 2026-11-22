@@ -51,13 +51,16 @@ export function client(authToken = token(), apiBase = process.env.REINE_API_BASE
     },
     /** Settings that are not part of the repository record. */
     async extra(fullName) {
-      const [actions, alerts] = await Promise.all([
+      const [actions, alerts, codeScanning] = await Promise.all([
         call('GET', `/repos/${fullName}/actions/permissions/workflow`),
         call('GET', `/repos/${fullName}/vulnerability-alerts`),
+        call('GET', `/repos/${fullName}/code-scanning/default-setup`),
       ]);
       return {
         actions: actions.status === 200 ? actions.data : undefined,
         alerts: alerts.status === 204 ? true : alerts.status === 404 ? false : undefined,
+        // Unavailable (403/404) on a private repository of a free account: the rule is then not applicable.
+        codeScanning: codeScanning.status === 200 ? codeScanning.data.state : undefined,
         workflowsWithoutPermissions: await this.workflowsWithoutPermissions(fullName),
       };
     },
