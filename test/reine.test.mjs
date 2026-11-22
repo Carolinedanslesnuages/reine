@@ -15,7 +15,7 @@ const compliantRepo = () => ({
   squash_merge_commit_title: 'PR_TITLE', squash_merge_commit_message: 'PR_BODY', delete_branch_on_merge: true, has_wiki: false,
   security_and_analysis: { secret_scanning: { status: 'enabled' }, secret_scanning_push_protection: { status: 'enabled' } },
 });
-const compliantExtra = () => ({ actions: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: true }, alerts: true, workflowsWithoutPermissions: [] });
+const compliantExtra = () => ({ actions: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: true }, alerts: true, codeScanning: 'configured', workflowsWithoutPermissions: [] });
 const writableActions = { default_workflow_permissions: 'write', can_approve_pull_request_reviews: false };
 const statuses = (results) => Object.fromEntries(results.map((result) => [result.rule.id, result.status]));
 
@@ -25,8 +25,8 @@ test('un dépôt bien réglé est conforme partout', () => {
 
 test('chaque écart est repéré', () => {
   const repo = { ...compliantRepo(), allow_merge_commit: true, squash_merge_commit_title: 'COMMIT_OR_PR_TITLE', has_wiki: true };
-  const found = statuses(checkRepository(repo, { ...compliantExtra(), alerts: false, actions: writableActions }));
-  for (const ruleId of ['fusion-squash-seule', 'squash-titre-de-la-pr', 'wiki-desactive', 'alertes-dependabot', 'actions-lecture-seule', 'actions-peut-ouvrir-des-pr']) {
+  const found = statuses(checkRepository(repo, { ...compliantExtra(), alerts: false, codeScanning: 'not-configured', actions: writableActions }));
+  for (const ruleId of ['fusion-squash-seule', 'squash-titre-de-la-pr', 'wiki-desactive', 'alertes-dependabot', 'actions-lecture-seule', 'actions-peut-ouvrir-des-pr', 'analyse-codeql']) {
     assert.equal(found[ruleId], 'mismatch', ruleId);
   }
 });
@@ -35,6 +35,7 @@ test('réglage illisible : non applicable, pas un écart', () => {
   const repo = { ...compliantRepo() };
   delete repo.security_and_analysis;
   assert.equal(statuses(checkRepository(repo, compliantExtra()))['detection-secrets'], 'unavailable');
+  assert.equal(statuses(checkRepository(compliantRepo(), { ...compliantExtra(), codeScanning: undefined }))['analyse-codeql'], 'unavailable', 'CodeQL indisponible (dépôt privé gratuit)');
 });
 
 test('garde-fou : pas de jeton en lecture seule si un workflow ne déclare pas ses droits', () => {
@@ -55,9 +56,9 @@ test('config : règle désactivée partout, ou exception pour un dépôt', () =>
 
 test('corrections : les bons appels, sans doublon', () => {
   const repo = { ...compliantRepo(), has_wiki: true };
-  const results = checkRepository(repo, { ...compliantExtra(), alerts: false, actions: writableActions });
+  const results = checkRepository(repo, { ...compliantExtra(), alerts: false, codeScanning: 'not-configured', actions: writableActions });
   const calls = fixes(repo, results).map((call) => `${call.method} ${call.path}`).sort();
-  assert.deepEqual(calls, ['PATCH /repos/moi/propre', 'PUT /repos/moi/propre/actions/permissions/workflow', 'PUT /repos/moi/propre/vulnerability-alerts'].sort());
+  assert.deepEqual(calls, ['PATCH /repos/moi/propre', 'PATCH /repos/moi/propre/code-scanning/default-setup', 'PUT /repos/moi/propre/actions/permissions/workflow', 'PUT /repos/moi/propre/vulnerability-alerts'].sort());
 });
 
 test('chaque règle dit pourquoi', () => {
@@ -71,6 +72,7 @@ function fakeApi() {
     brouillon: { ...compliantRepo(), name: 'brouillon', full_name: 'moi/brouillon', has_wiki: true, delete_branch_on_merge: false },
   };
   const alerts = { propre: true, brouillon: false };
+  const codeScanning = { propre: 'configured', brouillon: 'not-configured' };
   const writes = [];
   const server = createServer((request, response) => {
     let rawBody = '';
@@ -102,6 +104,14 @@ function fakeApi() {
         }
         return alerts[match[1]] ? send(204) : send(404, { message: 'Not Found' });
       }
+      if ((match = /^\/repos\/moi\/([^/]+)\/code-scanning\/default-setup$/.exec(path))) {
+        if (request.method === 'PATCH') {
+          writes.push(`PATCH codeql ${match[1]}`);
+          codeScanning[match[1]] = JSON.parse(rawBody).state;
+          return send(202, {});
+        }
+        return send(200, { state: codeScanning[match[1]] });
+      }
       if (/\/contents\/\.github\/workflows$/.test(path)) return send(404, { message: 'Not Found' });
       return send(404, { message: 'inconnu' });
     });
@@ -123,7 +133,7 @@ test('commande : verifier ne change rien ; appliquer corrige puis revérifie', a
   try {
     const check = await runCli(apiBase, ['verifier'], folder);
     assert.equal(check.code, 1);
-    assert.match(check.output, /✗ brouillon\s+supprimer-branche-fusionnee, alertes-dependabot, wiki-desactive/);
+    assert.match(check.output, /✗ brouillon\s+supprimer-branche-fusionnee, alertes-dependabot, analyse-codeql, wiki-desactive/);
     assert.match(check.output, /✓ propre\s+conforme/);
     assert.deepEqual(writes, [], 'verifier n’écrit rien');
     const json = JSON.parse((await runCli(apiBase, ['verifier', '--json'], folder)).output);
@@ -135,7 +145,7 @@ test('commande : verifier ne change rien ; appliquer corrige puis revérifie', a
     writeFileSync(join(folder, 'reine.json'), JSON.stringify({ exceptions: { brouillon: ['wiki-desactive'] } }));
     const apply = await runCli(apiBase, ['appliquer', '--oui'], folder);
     assert.equal(apply.code, 0, apply.output);
-    assert.deepEqual(writes.sort(), ['PATCH brouillon', 'PUT alertes brouillon']);
+    assert.deepEqual(writes.sort(), ['PATCH brouillon', 'PATCH codeql brouillon', 'PUT alertes brouillon']);
     assert.match(apply.output, /Après correction :\n✓ brouillon\s+conforme/);
   } finally {
     server.close();
