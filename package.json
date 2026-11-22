@@ -1,6 +1,6 @@
 {
   "name": "@carolinedanslesnuages/reine",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Les mêmes réglages GitHub dans tous vos dépôts : fusion en squash avec le titre de la PR, jeton Actions en lecture seule, alertes de sécurité… Vérifie, explique, et corrige sur demande.",
   "type": "module",
   "bin": {
