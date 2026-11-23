@@ -38,10 +38,10 @@ au *Traité d'horlogerie* de son mari : des réglages précis, identiques et vé
 Il faut Node.js 20 ou plus récent, et être connectée avec `gh auth login` (ou `GITHUB_TOKEN`).
 
 ```sh
-npx github:Carolinedanslesnuages/reine verifier              # tous vos dépôts publics
-npx github:Carolinedanslesnuages/reine verifier constance val
-npx github:Carolinedanslesnuages/reine appliquer             # confirme, corrige, revérifie
-npx github:Carolinedanslesnuages/reine verifier --tous --json
+npx @carolinedanslesnuages/reine verifier              # tous vos dépôts publics
+npx @carolinedanslesnuages/reine verifier constance val
+npx @carolinedanslesnuages/reine appliquer             # confirme, corrige, revérifie
+npx @carolinedanslesnuages/reine verifier --tous --json
 ```
 
 ```text
